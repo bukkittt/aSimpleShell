@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -16,6 +18,12 @@ typedef struct{
     char *output_file;
     int append;
 } command;
+
+typedef struct{
+    command *commands;
+    int count;
+    int capacity;
+} pipeline;
 
 static int interactive_mode = 0;
 static int should_exit = 0;
@@ -39,7 +47,7 @@ int is_builtin(command *cmd){
            strcmp(name, "exit") == 0;
 }
 
-//resolve the path for which
+//resolve the path for which (find path of executable)
 char *resolve_program(const char *name){
 
     if(strchr(name, '/') != NULL){
@@ -86,7 +94,76 @@ char *resolve_program(const char *name){
     return NULL;
 }
 
+//execute external like ls, etc.
+int exexternal(command *cmd){
+    char *path = resolve_program(cmd->args[0]);
 
+    if(path == NULL){
+        fprintf(stderr, "mysh: path not found: %s\n", cmd->args[0]);
+        return -1;
+    }
+
+    pid_t pid = fork();
+
+    if(pid < 0){
+        perror("fork");
+        free(path);
+        return -1;
+    }
+
+    //Child process
+    if(pid == 0){
+
+        if(!interactive_mode){
+
+            int null_fd = open("/dev/null", O_RDONLY);
+
+            if(null_fd < 0){
+                perror("/dev/null");
+                _exit(126);
+            }
+
+            if(dup2(null_fd, STDIN_FILENO) < 0){
+                perror("dup2");
+                _exit(126);
+            }
+
+            close(null_fd);
+        }
+
+        execv(path, cmd->args);
+
+        perror(cmd->args[0]);
+        _exit(126);
+    }
+
+    //parent process
+    int status;
+
+    while(waitpid(pid, &status, 0) < 0){
+
+        if(errno == EINTR){
+            continue;
+        }
+
+        perror("waitpid");
+        free(path);
+        return 1;
+    }
+
+    free(path);
+
+    // Step 5: Return execution result
+    if(WIFEXITED(status)){
+        return WEXITSTATUS(status);
+    }
+
+    if(WIFSIGNALED(status)){
+        return 128 + WTERMSIG(status);
+    }
+
+    return 1;
+}
 
 ////input
 
@@ -154,7 +231,17 @@ void promt_printing(void){
         return;
     }
 
-    printf("%s$ ", cwd);
+    char *home = getenv("HOME");
+
+    if(home != NULL &&
+       strncmp(cwd, home, strlen(home)) == 0 &&
+       (cwd[strlen(home)] == '/' || cwd[strlen(home)] == '\0')){
+
+        printf("~%s$ ", cwd + strlen(home));
+    }
+    else{
+        printf("%s$ ", cwd);
+    }
 
     free(cwd);
     fflush(stdout);
@@ -323,10 +410,6 @@ int builtin_pwd(command *cmd){
 
 //which
 int builtin_which(command * cmd){
-    if (cmd->argc > 2){
-        fprintf(stderr, "which: too many arguments\n");
-        return -1;
-    }
     if (cmd->argc < 2){
         fprintf(stderr, "which: missing arguments\n");
         return -1;
@@ -381,21 +464,23 @@ int exbuiltin(command *cmd){
 
 
 ////wildcard(2.3)
+// the *.txt
 //TODO
 
 ////redirection(2.4)
+// the > >> <
 //TODO
 //
 
 ////pipping(2.5)
+// the |
 //TODO
 //
 
-////error checking
-//If ANY?
+////error detecting
+//If ANY? like syntax error
 
 
-//
 ////main
 int main(int argc, char *argv[]){
     int fd;
@@ -458,15 +543,13 @@ int main(int argc, char *argv[]){
             continue;
         }
 
-        ///{{{{
-
         int status = 0;
 
         if(is_builtin(&cmd)){
             status = exbuiltin(&cmd);
         }
         else{
-            printf("External command: %s\n", cmd.args[0]);
+            status = exexternal(&cmd);
         }
 
         free(cmd.args);
@@ -485,4 +568,3 @@ int main(int argc, char *argv[]){
 
     return EXIT_SUCCESS;
 }
-
