@@ -392,7 +392,7 @@ int exbuiltin(command *cmd){
 //
 
 ////error checking
-// ahhfj asdj -> gibberish, should be able to detect it
+//If ANY?
 
 
 //
