@@ -18,12 +18,78 @@ typedef struct{
 } command;
 
 static int interactive_mode = 0;
+static int should_exit = 0;
 
-//helper methods
+////helper methods
+//
+//helper for buildins
+
+//return true if it is our builtin
+int is_builtin(command *cmd){
+
+    if(cmd->argc == 0){
+        return 0;
+    }
+
+    char *name = cmd->args[0];
+
+    return strcmp(name, "cd") == 0 ||
+           strcmp(name, "pwd") == 0 ||
+           strcmp(name, "which") == 0 ||
+           strcmp(name, "exit") == 0;
+}
+
+//resolve the path for which
+char *resolve_program(const char *name){
+
+    if(strchr(name, '/') != NULL){
+
+        if(access(name, X_OK) == 0){
+            char *result = malloc(strlen(name) + 1);
+
+            if(result == NULL){
+                return NULL;
+            }
+
+            strcpy(result, name);
+            return result;
+        }
+
+        return NULL;
+    }
+
+    const char *directories[] = {
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin"
+    };
+
+    for(int i = 0; i < 3; i++){
+
+        size_t size = strlen(directories[i]) + strlen(name) + 2;
+
+        char *candidate = malloc(size);
+
+        if(candidate == NULL){
+            return NULL;
+        }
+
+        snprintf(candidate, size, "%s/%s", directories[i], name);
+
+        if(access(candidate, X_OK) == 0){
+            return candidate;
+        }
+
+        free(candidate);
+    }
+
+    return NULL;
+}
+
 
 
 ////input
-//
+
 //reading from the command line
 char *read_command(int fd){
 
@@ -94,8 +160,7 @@ void promt_printing(void){
     fflush(stdout);
 }
 
-
-//tokenizing and parsing
+////tokenizing and parsing
 //
 //tokenizing - seperating command line to tokens(sequence of char without white space)
 //returns the number of token on success, -1 on failure
@@ -203,17 +268,140 @@ int parse_command(char **tokens, int count, command *cmd){
 
     return 0;
 }
-//wildcard
+
+////Build-in Command(section 3)
+//cd, pwd, which, exit
+
+//cd
+int builtin_cd(command *cmd){
+    if(cmd->argc>2){
+        fprintf(stderr, "cd: too many arguments\n");
+        return -1;
+    }
+
+    char *path;
+
+    if(cmd->argc == 1){
+        path = getenv("HOME");
+
+        if(path == NULL){
+            fprintf(stderr, "cd: HOME not set\n");
+            return -1;
+        }
+    }
+    else{
+        path = cmd->args[1];
+    }
+
+    if(chdir(path) == -1){
+        perror("cd");
+        return -1;
+    }
+
+    return 0;
+}
+
+//pwd
+int builtin_pwd(command *cmd){
+    if(cmd->argc != 1){
+        fprintf(stderr, "pwd: too many arguments\n");
+        return 1;
+    }
+    char *cwd = getcwd(NULL, 0);
+
+    if(cwd == NULL){
+        perror("getcwd");
+        return -1;
+    }
+
+    printf("%s\n", cwd);
+
+    free(cwd);
+
+    return 0;
+}
+
+//which
+int builtin_which(command * cmd){
+    if (cmd->argc > 2){
+        fprintf(stderr, "which: too many arguments\n");
+        return -1;
+    }
+    if (cmd->argc < 2){
+        fprintf(stderr, "which: missing arguments\n");
+        return -1;
+    }
+    int status = 0;
+
+    for(int i = 1; i < cmd->argc; i++){
+
+        char *path = resolve_program(cmd->args[i]);
+
+        if(path == NULL){
+            fprintf(stderr, "which: %s not found\n", cmd->args[i]);
+            status = 1;
+        }
+        else{
+            printf("%s\n", path);
+            free(path);
+        }
+    }
+    return status;
+}
+
+//exit
+int builtin_exit(void){
+    should_exit = 1;
+    return 0;
+}
+
+//executing builtin
+int exbuiltin(command *cmd){
+
+    char *name = cmd->args[0];
+
+    if(strcmp(name, "pwd") == 0){
+        return builtin_pwd(cmd);
+    }
+
+    if(strcmp(name, "cd") == 0){
+        return builtin_cd(cmd);
+    }
+
+    if(strcmp(name, "exit") == 0){
+        return builtin_exit();
+    }
+
+    if(strcmp(name, "which") == 0){
+        return builtin_which(cmd);
+    }
+
+    return 1;
+}
+
+
+////wildcard(2.3)
+//TODO
+
+////redirection(2.4)
+//TODO
 //
 
-//pipping
+////pipping(2.5)
+//TODO
+//
 
-//main
+////error checking
+// ahhfj asdj -> gibberish, should be able to detect it
+
+
+//
+////main
 int main(int argc, char *argv[]){
     int fd;
 
     if(argc > 2){
-        fprintf(stderr, "too much arguments.");
+        fprintf(stderr, "too many arguments.");
         return EXIT_FAILURE;
     }
 
@@ -270,25 +458,25 @@ int main(int argc, char *argv[]){
             continue;
         }
 
-        printf("Number of arguments: %d\n", cmd.argc);
+        ///{{{{
 
-        for(int i = 0; i < cmd.argc; i++){
-            printf("Argument %d: %s\n", i, cmd.args[i]);
+        int status = 0;
+
+        if(is_builtin(&cmd)){
+            status = exbuiltin(&cmd);
         }
-
-        printf("Input file: %s\n",
-            cmd.input_file == NULL ? "None" : cmd.input_file);
-
-        printf("Output file: %s\n",
-            cmd.output_file == NULL ? "None" : cmd.output_file);
-
-        printf("Append: %d\n", cmd.append);
+        else{
+            printf("External command: %s\n", cmd.args[0]);
+        }
 
         free(cmd.args);
         free(tokens);
         free(commands);
-    }
 
+        if(should_exit){
+            break;
+        }
+    }
     if (interactive_mode)
         printf("Exiting my shell.\n");
 
