@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <dirent.h>     //ADDED: opendir/readdir for wildcards
+#include <dirent.h>  
 
 typedef struct{
     char **args;
@@ -99,9 +99,7 @@ char *resolve_program(const char *name){
     return NULL;
 }
 
-//==================== ADDED START: print program result in the spec's format ====================
-//print the result of a finished program (interactive mode only)
-//status is the raw value from waitpid, so exit codes and signals stay separate
+
 void report_status(int status){
     if(!interactive_mode){
         return;
@@ -116,7 +114,7 @@ void report_status(int status){
 
     fflush(stdout);
 }
-//==================== ADDED END ====================
+
 
 //redirection
 //<, >, >>
@@ -234,7 +232,7 @@ int exexternal(command *cmd){
 
     free(path);
 
-    report_status(status); //ADDED: print "Exited with status N" / "Terminated by signal"
+    report_status(status); 
 
     if(WIFEXITED(status)){
         return WEXITSTATUS(status);
@@ -397,7 +395,7 @@ int parse_command(char **tokens, int count, command *cmd){
 
         if(strcmp(tokens[i], "<")==0){
             if(cmd->input_file != NULL ||i + 1 >= count||is_operator(tokens[i + 1])){
-                fprintf(stderr, "Syntax error: invalid use of <\n"); //CHANGED: typo Syntex -> Syntax
+                fprintf(stderr, "Syntax error: invalid use of <\n"); 
                 free(temp_args);
                 return -1;
             }
@@ -408,7 +406,7 @@ int parse_command(char **tokens, int count, command *cmd){
 
         if(strcmp(tokens[i], ">")==0){
             if(cmd->output_file != NULL ||i + 1 >= count ||is_operator(tokens[i + 1])){
-                fprintf(stderr, "Syntax error: invalid use of >\n"); //CHANGED: typo Syntex -> Syntax
+                fprintf(stderr, "Syntax error: invalid use of >\n"); 
                 free(temp_args);
                 return -1;
             }
@@ -420,7 +418,7 @@ int parse_command(char **tokens, int count, command *cmd){
 
         if(strcmp(tokens[i], ">>")==0){
             if(cmd->output_file != NULL ||i + 1 >= count ||is_operator(tokens[i + 1])){
-                fprintf(stderr, "Syntax error: invalid use of >>\n"); //CHANGED: typo Syntex -> Syntax
+                fprintf(stderr, "Syntax error: invalid use of >>\n"); 
                 free(temp_args);
                 return -1;
             }
@@ -434,7 +432,7 @@ int parse_command(char **tokens, int count, command *cmd){
     }
 
     if(arg_count == 0){
-        fprintf(stderr, "Syntax error: missing command\n"); //ADDED: so every syntax error prints exactly one message
+        fprintf(stderr, "Syntax error: missing command\n"); 
         free(temp_args);
         return -1;
     }
@@ -471,7 +469,7 @@ int parse_pipeline(char **token, int count, pipeline *p){
                 return -1;
             }
             if(parse_command(token + start, length, &p->commands[p->count]) == -1){
-                //CHANGED: removed "Invalid command in pipe" (parse_command already printed the error)
+                
                 for(int j = 0; j < p->count; j++){
                     free(p->commands[j].args);
                 }
