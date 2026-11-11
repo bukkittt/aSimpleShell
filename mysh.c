@@ -47,6 +47,13 @@ int is_builtin(command *cmd){
            strcmp(name, "exit") == 0;
 }
 
+int is_operator(const char *token){
+    return strcmp(token, "<") == 0 ||
+           strcmp(token, ">") == 0 ||
+           strcmp(token, ">>") == 0 ||
+           strcmp(token, "|") == 0;
+}
+
 //resolve the path for which (find path of executable)
 char *resolve_program(const char *name){
 
@@ -367,8 +374,8 @@ int parse_command(char **tokens, int count, command *cmd){
     for(int i = 0; i < count; i++){
 
         if(strcmp(tokens[i], "<")==0){
-
-            if(i + 1 >= count){
+            if(cmd->input_file != NULL ||i + 1 >= count||is_operator(tokens[i + 1])){
+                fprintf(stderr, "Syntex error: invalid use of <\n");
                 free(temp_args);
                 return -1;
             }
@@ -378,7 +385,8 @@ int parse_command(char **tokens, int count, command *cmd){
         }
 
         if(strcmp(tokens[i], ">")==0){
-            if(i + 1 >= count){
+            if(cmd->output_file != NULL ||i + 1 >= count ||is_operator(tokens[i + 1])){
+                fprintf(stderr, "Syntex error: invalid use of >\n");
                 free(temp_args);
                 return -1;
             }
@@ -389,7 +397,8 @@ int parse_command(char **tokens, int count, command *cmd){
         }
 
         if(strcmp(tokens[i], ">>")==0){
-            if(i + 1 >= count){
+            if(cmd->output_file != NULL ||i + 1 >= count ||is_operator(tokens[i + 1])){
+                fprintf(stderr, "Syntex error: invalid use of >>\n");
                 free(temp_args);
                 return -1;
             }
@@ -611,12 +620,174 @@ int exbuiltinRedirection(command *cmd){
 // the *.txt
 //TODO
 
+
 ////pipping(2.5)
 // the |
 
 //executing pipeline
 int expipeline(pipeline *p){
-    
+    int n = p->count;
+    if(n == 0){
+        return 0;
+    }
+
+    int (*pipes)[2] = NULL;
+
+    if(n > 1){
+        pipes = malloc((n - 1) * sizeof(int[2]));
+
+        if(pipes == NULL){
+            perror("malloc");
+            return -1;
+        }
+
+        for(int i = 0; i < n - 1; i++){
+            if(pipe(pipes[i]) < 0){
+                perror("pipe");
+                for(int j = 0; j < i; j++){
+                    close(pipes[j][0]);
+                    close(pipes[j][1]);
+                }
+
+                free(pipes);
+                return -1;
+            }
+        }
+    }
+
+    pid_t *pids = malloc(n * sizeof(pid_t)); //child(ren) pid
+
+    if(pids == NULL){
+        perror("malloc");
+
+        for(int i = 0; i < n - 1; i++){
+            close(pipes[i][0]);
+            close(pipes[i][1]);
+        }
+
+        free(pipes);
+        return 1;
+    }
+
+    int started = 0;
+    for(int i = 0; i < n; i++){
+
+        pid_t pid = fork();
+
+        if(pid < 0){
+            perror("fork");
+            break;
+        }
+
+        //child process
+        if(pid == 0){
+            if(i == 0 && !interactive_mode){
+
+                int null_fd = open("/dev/null", O_RDONLY);
+
+                if(null_fd < 0){
+                    perror("/dev/null");
+                    _exit(126);
+                }
+
+                if(dup2(null_fd, STDIN_FILENO) < 0){
+                    perror("dup2");
+                    _exit(126);
+                }
+
+                close(null_fd);
+            }
+
+            //input
+            if(i > 0){
+
+                if(dup2(pipes[i-1][0], STDIN_FILENO) < 0){
+                    perror("dup2");
+                    _exit(126);
+                }
+            }
+
+            //output
+            if(i < n - 1){
+
+                if(dup2(pipes[i][1], STDOUT_FILENO) < 0){
+                    perror("dup2");
+                    _exit(126);
+                }
+            }
+
+            // Close all original pipe descriptors
+            for(int j = 0; j < n - 1; j++){
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+
+            command *cmd = &p->commands[i];
+
+            // Execute built-in
+            if(is_builtin(cmd)){
+
+                int status = exbuiltin(cmd);
+                fflush(stdout);
+                fflush(stderr);
+                _exit(status == 0 ? 0 : (status > 0 ? status : 1));
+            }
+
+            // Execute external 
+            char *path = resolve_program(cmd->args[0]);
+            if(path == NULL){
+                fprintf(stderr, "mysh: path not found: %s\n", cmd->args[0]);
+                _exit(127);
+            }
+            execv(path, cmd->args);
+
+            perror(cmd->args[0]);
+            free(path);
+            _exit(126);
+        }
+
+        //parent
+        pids[started] = pid;
+        started++;
+    }
+
+    for(int i = 0; i < n - 1; i++){
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+
+    free(pipes);
+
+    // Wait for all child processes
+    int last_status = -1;
+
+    for(int i = 0; i < started; i++){
+
+        int status;
+        pid_t result;
+        do{
+            result = waitpid(pids[i], &status, 0);
+        }while(result < 0 && errno == EINTR);
+
+        if(result < 0){
+            perror("waitpid");
+            last_status = -1;
+            continue;
+        }
+        if(i == n - 1){
+            if(WIFEXITED(status)){
+                last_status = WEXITSTATUS(status);
+            }
+            else if(WIFSIGNALED(status)){
+                last_status = 128 + WTERMSIG(status);
+            }
+            else{
+                last_status = -1;
+            }
+        }
+    }
+    free(pids);
+    return last_status;
 }
 
 ////error detecting
@@ -675,10 +846,9 @@ int main(int argc, char *argv[]){
             continue;
         }
 
-        command cmd;
-
-        if(parse_command(tokens, count, &cmd) == -1){
-            fprintf(stderr, "Invalid command\n");
+        pipeline p;
+        if(parse_pipeline(tokens, count, &p) == -1){
+            fprintf(stderr, "Invalid pipeline\n");
 
             free(tokens);
             free(commands);
@@ -687,19 +857,38 @@ int main(int argc, char *argv[]){
 
         int status = 0;
 
-        if(is_builtin(&cmd)){
-            status = exbuiltinRedirection(&cmd);
+        if(p.count == 1){
+            // Normal single command
+            command *cmd = &p.commands[0];
+            if(is_builtin(cmd)){
+                status = exbuiltinRedirection(cmd);
+            }
+            else{
+                status = exexternal(cmd);
+            }
         }
         else{
-            status = exexternal(&cmd);
+            status = expipeline(&p);
         }
+
+        //exit
+        for(int i = 0; i < p.count; i++){
+
+            if(strcmp(p.commands[i].args[0], "exit") == 0){
+                should_exit = 1;
+            }
+        }
+
+        for(int i = 0; i < p.count; i++){
+            free(p.commands[i].args);
+        }
+
+        free(p.commands);
 
         if(interactive_mode && status != 0){
             fprintf(stderr, "Command exited with status %d\n", status);
         }
-
         //freeing
-        free(cmd.args);
         free(tokens);
         free(commands);
 
