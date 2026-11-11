@@ -73,12 +73,10 @@ char *resolve_program(const char *name){
     };
 
     for(int i = 0; i < 3; i++){
-
         size_t size = strlen(directories[i]) + strlen(name) + 2;
-
         char *candidate = malloc(size);
 
-        if(candidate == NULL){
+	if(candidate == NULL){
             return NULL;
         }
 
@@ -87,12 +85,64 @@ char *resolve_program(const char *name){
         if(access(candidate, X_OK) == 0){
             return candidate;
         }
-
         free(candidate);
     }
 
     return NULL;
 }
+
+//redirection
+//<, >, >>
+int redirection(command *cmd){
+    // < input// 
+    if(cmd->input_file != NULL){
+        int fd = open(cmd-> input_file, O_RDONLY);
+        if (fd < 0){
+            perror(cmd-> input_file);
+            return -1;
+        }
+
+        if(dup2(fd, STDIN_FILENO) < 0){
+            perror("dup2");
+            close(fd);
+            return -1;
+        }
+
+        close(fd);
+    }
+    ////////////
+
+    // > & >> output//
+    if(cmd-> output_file != NULL){
+        int flags = O_WRONLY | O_CREAT;
+
+        if(cmd->append){
+            flags |= O_APPEND;
+        }
+        else{
+            flags |= O_TRUNC;
+        }
+
+        int fd = open(cmd->output_file, flags, 0640);
+
+        if(fd < 0){
+            perror(cmd->output_file);
+            return -1;
+        }
+
+        if(dup2(fd, STDOUT_FILENO) < 0){
+            perror("dup2");
+            close(fd);
+            return -1;
+        }
+
+        close(fd);
+    }
+    ///////////
+
+    return 0;
+}
+
 
 //execute external like ls, etc.
 int exexternal(command *cmd){
@@ -131,6 +181,10 @@ int exexternal(command *cmd){
             close(null_fd);
         }
 
+        if(redirection(cmd) < 0){
+                _exit(1);
+            }
+
         execv(path, cmd->args);
 
         perror(cmd->args[0]);
@@ -153,7 +207,6 @@ int exexternal(command *cmd){
 
     free(path);
 
-    // Step 5: Return execution result
     if(WIFEXITED(status)){
         return WEXITSTATUS(status);
     }
@@ -349,11 +402,59 @@ int parse_command(char **tokens, int count, command *cmd){
         arg_count++;
     }
 
+    if(arg_count == 0){
+        free(temp_args);
+        return -1;
+    }
+
     temp_args[arg_count] = NULL;
     cmd->args = temp_args;
     cmd->argc = arg_count;
 
     return 0;
+}
+
+//parsing pipeline
+int parse_pipeline(char **token, int count, pipeline *p){
+    //initialization
+    p -> commands = calloc((count+1), sizeof(command));
+    if(p -> commands == NULL){
+        return -1;
+    }
+    p -> count = 0;
+    p -> capacity = count+1;
+    int start = 0;
+    for(int i = 0; i <= count; i++){
+        if(i == count || strcmp(token[i], "|") == 0){
+            int length = i - start;
+            if(length == 0){
+                fprintf(stderr, "Empty command before/after pipe\n");
+                for(int j = 0; j < p->count; j++){
+                    free(p->commands[j].args);
+                }
+
+                free(p->commands);
+                p->commands = NULL;
+                p->count = 0;
+                return -1;
+            }
+            if(parse_command(token + start, length, &p->commands[p->count]) == -1){
+                fprintf(stderr, "Invalid command in pipe\n");
+                for(int j = 0; j < p->count; j++){
+                    free(p->commands[j].args);
+                }
+                free(p->commands);
+                p->commands = NULL;
+                p->count = 0;
+                return -1;
+            }
+            p->count++;
+            start = i + 1;
+        }
+    }
+
+    return 0;
+
 }
 
 ////Build-in Command(section 3)
@@ -462,20 +563,61 @@ int exbuiltin(command *cmd){
     return 1;
 }
 
+//executing built in with redirection
+int exbuiltinRedirection(command *cmd){
+    //saving
+    fflush(stdout);
+    
+    int saved_stdin = dup(STDIN_FILENO);
+    int saved_stdout = dup(STDOUT_FILENO);
+
+    if(saved_stdin < 0 || saved_stdout < 0){
+        perror("dup");
+        if(saved_stdin >= 0) close(saved_stdin);
+        if(saved_stdout >= 0) close(saved_stdout);
+        return -1;
+    }
+
+    if(redirection(cmd) < 0){
+        dup2(saved_stdin, STDIN_FILENO);
+        dup2(saved_stdout, STDOUT_FILENO);
+
+        close(saved_stdin);
+        close(saved_stdout);
+        return -1;
+    }
+
+    int status = exbuiltin(cmd);
+    fflush(stdout);
+
+    if(dup2(saved_stdin, STDIN_FILENO) < 0){
+        perror("dup2");
+        status = 1;
+    }
+
+    if(dup2(saved_stdout, STDOUT_FILENO) < 0){
+        perror("dup2");
+        status = 1;
+    }
+
+    close(saved_stdin);
+    close(saved_stdout);
+
+    return status;
+}
+
 
 ////wildcard(2.3)
 // the *.txt
 //TODO
 
-////redirection(2.4)
-// the > >> <
-//TODO
-//
-
 ////pipping(2.5)
 // the |
-//TODO
-//
+
+//executing pipeline
+int expipeline(pipeline *p){
+    
+}
 
 ////error detecting
 //If ANY? like syntax error
@@ -546,12 +688,17 @@ int main(int argc, char *argv[]){
         int status = 0;
 
         if(is_builtin(&cmd)){
-            status = exbuiltin(&cmd);
+            status = exbuiltinRedirection(&cmd);
         }
         else{
             status = exexternal(&cmd);
         }
 
+        if(interactive_mode && status != 0){
+            fprintf(stderr, "Command exited with status %d\n", status);
+        }
+
+        //freeing
         free(cmd.args);
         free(tokens);
         free(commands);
