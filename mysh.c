@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <dirent.h>     //ADDED: opendir/readdir for wildcards
 
 typedef struct{
     char **args;
@@ -97,6 +98,25 @@ char *resolve_program(const char *name){
 
     return NULL;
 }
+
+//==================== ADDED START: print program result in the spec's format ====================
+//print the result of a finished program (interactive mode only)
+//status is the raw value from waitpid, so exit codes and signals stay separate
+void report_status(int status){
+    if(!interactive_mode){
+        return;
+    }
+
+    if(WIFEXITED(status) && WEXITSTATUS(status) != 0){
+        printf("Exited with status %d\n", WEXITSTATUS(status));
+    }
+    else if(WIFSIGNALED(status)){
+        printf("Terminated by signal: %s\n", strsignal(WTERMSIG(status)));
+    }
+
+    fflush(stdout);
+}
+//==================== ADDED END ====================
 
 //redirection
 //<, >, >>
@@ -213,6 +233,8 @@ int exexternal(command *cmd){
     }
 
     free(path);
+
+    report_status(status); //ADDED: print "Exited with status N" / "Terminated by signal"
 
     if(WIFEXITED(status)){
         return WEXITSTATUS(status);
@@ -375,7 +397,7 @@ int parse_command(char **tokens, int count, command *cmd){
 
         if(strcmp(tokens[i], "<")==0){
             if(cmd->input_file != NULL ||i + 1 >= count||is_operator(tokens[i + 1])){
-                fprintf(stderr, "Syntex error: invalid use of <\n");
+                fprintf(stderr, "Syntax error: invalid use of <\n"); //CHANGED: typo Syntex -> Syntax
                 free(temp_args);
                 return -1;
             }
@@ -386,7 +408,7 @@ int parse_command(char **tokens, int count, command *cmd){
 
         if(strcmp(tokens[i], ">")==0){
             if(cmd->output_file != NULL ||i + 1 >= count ||is_operator(tokens[i + 1])){
-                fprintf(stderr, "Syntex error: invalid use of >\n");
+                fprintf(stderr, "Syntax error: invalid use of >\n"); //CHANGED: typo Syntex -> Syntax
                 free(temp_args);
                 return -1;
             }
@@ -398,7 +420,7 @@ int parse_command(char **tokens, int count, command *cmd){
 
         if(strcmp(tokens[i], ">>")==0){
             if(cmd->output_file != NULL ||i + 1 >= count ||is_operator(tokens[i + 1])){
-                fprintf(stderr, "Syntex error: invalid use of >>\n");
+                fprintf(stderr, "Syntax error: invalid use of >>\n"); //CHANGED: typo Syntex -> Syntax
                 free(temp_args);
                 return -1;
             }
@@ -412,6 +434,7 @@ int parse_command(char **tokens, int count, command *cmd){
     }
 
     if(arg_count == 0){
+        fprintf(stderr, "Syntax error: missing command\n"); //ADDED: so every syntax error prints exactly one message
         free(temp_args);
         return -1;
     }
@@ -448,7 +471,7 @@ int parse_pipeline(char **token, int count, pipeline *p){
                 return -1;
             }
             if(parse_command(token + start, length, &p->commands[p->count]) == -1){
-                fprintf(stderr, "Invalid command in pipe\n");
+                //CHANGED: removed "Invalid command in pipe" (parse_command already printed the error)
                 for(int j = 0; j < p->count; j++){
                     free(p->commands[j].args);
                 }
@@ -618,8 +641,174 @@ int exbuiltinRedirection(command *cmd){
 
 ////wildcard(2.3)
 // the *.txt
-//TODO
+typedef struct{
+    char **data;
+    int len;
+    int cap;
+} arglist;
 
+static int arglist_init(arglist *l){
+    l->len = 0;
+    l->cap = 8;
+    l->data = malloc(l->cap * sizeof(char *));
+
+    if(l->data == NULL){
+        return -1;
+    }
+
+    l->data[0] = NULL;
+    return 0;
+}
+
+//append s to the list (the list takes ownership of s)
+static int arglist_push(arglist *l, char *s){
+    if(s == NULL){
+        return -1;
+    }
+
+    if(l->len + 1 >= l->cap){
+        int new_cap = l->cap * 2;
+        char **temp = realloc(l->data, new_cap * sizeof(char *));
+
+        if(temp == NULL){
+            free(s);
+            return -1;
+        }
+
+        l->data = temp;
+        l->cap = new_cap;
+    }
+
+    l->data[l->len] = s;
+    l->len++;
+    l->data[l->len] = NULL;
+    return 0;
+}
+
+static int compare_names(const void *a, const void *b){
+    return strcmp(*(char * const *)a, *(char * const *)b);
+}
+
+static int glob_into(arglist *l, const char *pattern){
+    const char *slash = strrchr(pattern, '/');
+    const char *file = slash ? slash + 1 : pattern;   //last part of the path
+    const char *star = strchr(file, '*');
+
+    //* only in the directory part, or more than one * in the name: keep as-is
+    if(star == NULL || strchr(star + 1, '*') != NULL){
+        return arglist_push(l, strdup(pattern));
+    }
+
+    size_t dirlen = slash ? (size_t)(slash - pattern + 1) : 0;  //includes the '/'
+    char *dirpath = slash ? strndup(pattern, dirlen) : strdup(".");
+
+    if(dirpath == NULL){
+        return -1;
+    }
+
+    DIR *dir = opendir(dirpath);
+    free(dirpath);
+
+    if(dir == NULL){//directory doesn't exist, so no matches
+        return arglist_push(l, strdup(pattern));
+    }
+
+    size_t prelen = star - file;      //characters before the *
+    const char *suffix = star + 1;    //characters after the *
+    size_t suflen = strlen(suffix);
+
+    int first_match = l->len;
+    struct dirent *entry;
+
+    while((entry = readdir(dir)) != NULL){
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+
+        if(prelen == 0 && name[0] == '.'){
+            continue;
+        }
+
+        if(len < prelen + suflen ||
+           strncmp(name, file, prelen) != 0 ||
+           strcmp(name + len - suflen, suffix) != 0){
+            continue;
+        }
+
+        //rebuild the full path: directory part + matching name
+        char *full = malloc(dirlen + len + 1);
+
+        if(full == NULL){
+            closedir(dir);
+            return -1;
+        }
+
+        memcpy(full, pattern, dirlen);
+        strcpy(full + dirlen, name);
+
+        if(arglist_push(l, full) == -1){
+            closedir(dir);
+            return -1;
+        }
+    }
+
+    closedir(dir);
+
+    if(l->len == first_match){//no matches
+        return arglist_push(l, strdup(pattern));
+    }
+
+    //sort just the names we added, so the output is predictable
+    qsort(l->data + first_match, l->len - first_match, sizeof(char *), compare_names);
+    return 0;
+}
+
+int expand_wildcards(command *cmd){
+    arglist l;
+
+    if(arglist_init(&l) == -1){
+        free(cmd->args);
+        cmd->args = NULL;
+        cmd->argc = 0;
+        return -1;
+    }
+
+    int result = 0;
+
+    for(int i = 0; i < cmd->argc; i++){
+        char *arg = cmd->args[i];
+
+        if(strchr(arg, '*') != NULL){
+            result = glob_into(&l, arg);
+        }
+        else{
+            result = arglist_push(&l, strdup(arg));
+        }
+
+        if(result == -1){
+            break;
+        }
+    }
+
+    //old array only held pointers into tokens, so only the array is freed
+    free(cmd->args);
+    cmd->args = l.data;
+    cmd->argc = l.len;
+
+    return result;
+}
+
+//expand wildcards in every command of the pipeline
+int expand_pipeline_wildcards(pipeline *p){
+    int result = 0;
+
+    for(int i = 0; i < p->count; i++){
+        if(expand_wildcards(&p->commands[i]) == -1){
+            result = -1;
+        }
+    }
+
+    return result;
+}
 
 ////pipping(2.5)
 // the |
@@ -724,6 +913,10 @@ int expipeline(pipeline *p){
 
             command *cmd = &p->commands[i];
 
+            if(redirection(cmd) < 0){
+                _exit(1);
+            }
+
             // Execute built-in
             if(is_builtin(cmd)){
 
@@ -775,6 +968,8 @@ int expipeline(pipeline *p){
             continue;
         }
         if(i == n - 1){
+            report_status(status);
+
             if(WIFEXITED(status)){
                 last_status = WEXITSTATUS(status);
             }
@@ -848,17 +1043,19 @@ int main(int argc, char *argv[]){
 
         pipeline p;
         if(parse_pipeline(tokens, count, &p) == -1){
-            fprintf(stderr, "Invalid pipeline\n");
 
             free(tokens);
             free(commands);
             continue;
         }
 
+        if(expand_pipeline_wildcards(&p) == -1){
+            perror("malloc");
+        }
+
         int status = 0;
 
         if(p.count == 1){
-            // Normal single command
             command *cmd = &p.commands[0];
             if(is_builtin(cmd)){
                 status = exbuiltinRedirection(cmd);
@@ -879,15 +1076,19 @@ int main(int argc, char *argv[]){
             }
         }
 
+        //after wildcard expansion every argument string is malloc'd, so free them too
         for(int i = 0; i < p.count; i++){
+            if(p.commands[i].args != NULL){
+                for(int j = 0; j < p.commands[i].argc; j++){
+                    free(p.commands[i].args[j]);
+                }
+            }
             free(p.commands[i].args);
         }
 
         free(p.commands);
 
-        if(interactive_mode && status != 0){
-            fprintf(stderr, "Command exited with status %d\n", status);
-        }
+        (void)status;
         //freeing
         free(tokens);
         free(commands);
