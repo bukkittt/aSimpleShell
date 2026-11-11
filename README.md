@@ -67,3 +67,67 @@ Status and exit
   This includes exit inside a pipeline such as "exit | echo hi > f". End
   of input also ends the shell.
 
+# test plan:
+
+### Tokenization and Parsing
+1. echo hello world
+    - will not print error message
+    - print "hello world"
+2. echo hello # hahahahaha
+    - print "hello"
+3. #????////asdhihv
+    - print nothing
+
+
+### Redirection
+1. ls > / ls < / ls >>
+    - invalid use of each redirection
+2. ls > > output.txt
+    - invalid use
+3. echo hello > output.txt
+    - write hello into output.txt file
+    - create ouput.txt file if it is not originally exist
+- running echo goodbye > output.txt will replace the "hello" with "goodbye"
+- running echo goodbye >> output.txt will apend "goodbye" with "hello"
+4. cat < output.txt
+    - print the content of the output.txt file
+5. cat < input.txt > output.txt
+    - take input.txt as input and save output to output.txt
+
+### Build in command
+
+1. cd
+    - cd . --> Will not change anything
+    - cd .. --> will traverse to the parent directory
+    - cd.. --> not found
+    - cd path/to/destintion --> traverse through the path specified
+
+2. pwd
+    - the path to the current directory
+3. which
+    - which -> missing arguments
+    - which ls -> print the path to an executable
+    - which ls -> process multiple arguments
+4. exit
+    - exit -> terminate the program
+    - exit ??? -> still terminate
+    - exit | echo hello -> print hello and then terminate
+5. any command + extra -> invalid
+
+### External command
+1. ls -> listing all the file in the current directory
+2. echo hello -> print hello
+3. ./executable -> execute that executable
+
+### Piping
+1. | ls / ls | / ls | | cd
+    - invalid pipeline
+2. ls | wc -l
+    - print the number of files in directory
+
+### Wildcard
+1. echo *.txt
+    - print all .txt file
+2. echo foo*bar
+    - print all file with the maching start and end
+
